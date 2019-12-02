@@ -1,0 +1,310 @@
+---
+title: "finviz"
+runtime: shiny
+output: 
+  flexdashboard::flex_dashboard:
+    source_code: embed
+    vertical_layout: fill
+---
+
+```{r setup, include=FALSE}
+library(zoo)
+library(xts)
+library(TTR)
+library(quantmod)
+library(tidyverse)
+library(gridExtra)
+library(flexdashboard)
+library(treemap)
+library(shiny)
+library(DT)
+library(highcharter)
+library(viridisLite)
+library(pacman) 
+```
+
+
+Maps
+===============================================
+
+Inputs{.sidebar}
+---------------------------------
+SZ A
+
+```{r}
+#侧面板
+selectInput("t_interval", label = "time interval:",
+            choices = c("1 day performance","1 week performance"), 
+            selected ="1 day performance")
+textInput("stocks","quick search ticker","BIYADI")
+actionButton("go","submit")
+```
+
+
+```{r}
+#数据：选取上证A股前48只股票（按股票代码排序）
+stock=read.csv('stockid.csv',stringsAsFactors=F)
+data=list()
+#quantmod包根据股票代码获取交易数据（最高价、最低价、收盘价、开盘价等）
+for(i in 1:length(stock$id)){
+  try(setSymbolLookup(TEMP=list(name=paste0(stock$id[i],'.ss'))))
+  try(getSymbols("TEMP",warnings=F))
+  try(data[stock$name[i]]<-list(TEMP))
+}
+data<-na.omit(data)
+#head(data$浦发银行)
+#在列表中提取各股票开盘价收盘价数据，并汇总在一个数据框（时间：2007-01-04）
+library(plyr)
+l1<-lapply(data,function(x){
+  x=as.data.frame(x)
+  return(list(x[1,c(1,4)]))#提取第1,4列，即开盘价、收盘价
+})
+la<-list()
+la[[1]]<-data.frame(get(paste0('l',1)))
+la
+#write.csv(la,file = "la.csv")  #生成csv,将时间数据转化为数据框格式
+la=read.csv("la.csv")
+#计算日涨跌幅
+la$change=la[,3]/la[,2]-1
+```
+
+https://finviz.com/map.ashx
+
+Row
+--------------------------------------------------
+### Maps
+```{r}
+tm<- treemap(
+    la,
+    index=c("industry","industry2","X"),
+    vSize="mktvalue",
+    vColor="change",
+    type="value",
+    palette=c("#003300", "#990000"),
+   )
+#生成可放大缩小的动图
+highchart() %>%
+  hc_colorAxis(maxColor = "#003300",minColor="#990000")%>%
+  hc_title(text = "MAP")%>%
+  hc_add_series(data = la,type = "treemap",hcaes(name = X,value = mktvalue,colorValue =change),layoutAlgorithm = "squarified") %>%
+  hc_add_theme(hc_theme_google())
+```
+
+Groups
+=====================================
+
+Inputs{.sidebar}
+---------------------------------
+```{r}
+selectInput("Group", label = "Group:",
+            choices = c("Sector","Industry","Country","Capitalization"), selected ="Srctor")
+
+selectInput("Order", label = "Order:",
+            choices = c("Name","Performance(Week)","Performance(Month)"), selected ="Name")
+selectInput("Orders", label = "",
+            choices = c("Ascending","Descending"),selected ="Ascending")
+
+```
+
+
+Row {.tabset}
+--------------------------------------------------
+### Performance
+```{r}
+#RESSET数据库获取行业指数的日、周、月、季度的涨跌幅
+#时间：2019/09/30
+group_perf<-read.csv("group_perf.csv",T) 
+
+#画表格
+datatable(group_perf, options = list(dom = 'lftipr'), 
+          class = "display", callback = JS("return table;"), 
+          rownames, caption = NULL, 
+          filter = c("none", "bottom", "top"), 
+          escape = TRUE, style = "default",
+          width = NULL, height = NULL, 
+          elementId = NULL, 
+          fillContainer = getOption("DT.fillContainer", NULL), 
+          autoHideNavigation = getOption("DT.autoHideNavigation", NULL), 
+          selection = c("multiple", "single", "none"), 
+          extensions = list(), plugins = NULL)
+#list(dom = 'lftipr')
+
+
+```
+
+
+### Bar Chart
+```{r}
+#将百分比数据转化为数值型数据
+gr<-data.frame(lapply(group_perf[,2:4], 
+                      function(x) as.numeric(sub("%", "", x))) )
+#将数据按日涨跌幅排序
+g_day<- cbind.data.frame(group_perf$Name,gr$Perf.Day)[order(-gr$Perf.Day),]
+abs_g<- abs(g_day[,2])
+#按涨跌幅设置颜色
+mycol<- brewer.pal(11,"RdYlGn")[c(1,2,2,9,10,11)]
+par(pin=c(4,3),lwd=2,las=2,cex=0.8)
+#renderPlot({barplot(total)})
+#画出条形图
+barplot(abs_g,
+        names.arg=g_day[,1],
+        xlim=c(0,1),
+        xaxt =  "n",
+        col=mycol,
+        border=col,
+        horiz=TRUE
+        )
+axis(1,seq(0,1,0.5),col="grey", col.axis="grey",las = 1,cex.axis=0.8)  #设置坐标格式 
+abline(h=7.3,v=c(0.5,1),lty=3,col="grey")  #设置坐标轴格式
+text(x=abs_g+0.1,1:6*1.2,labels=g_day$`gr$Perf.Day`,pos=1,col=mycol)  #设置数据标签格式
+title(main="1 DAY PERFORMANCE %",adj=0,sub="2019/09/30 04:00PM")
+
+```
+
+
+Forex
+=====================================
+
+Row {.tabset}
+--------------------------------------------------
+
+### Chart
+```{r}
+library(RColorBrewer)
+#RESSET数据库获取外汇价格、5分钟、1小时、周、月、年的变动数据
+#时间：2019/09/30
+forex<- read.csv("forex.csv",
+                 header = T,  
+                 sep = ',')
+#去除百分号
+forex1<- data.frame(lapply(forex[,2:9], 
+                           function(x) as.numeric(sub("%", "", x))))
+forex_day<- cbind.data.frame(forex$Ticker,forex1$Perf.Day)
+#将计价货币改为美元
+for (i in seq_len(nrow(forex_day))){
+    if (substring(forex_day[i,1], 1, 3)=="USD"){
+       forex_day[i,2]=-forex_day[i,2] 
+   }
+}
+fxday<- forex_day[order(-forex_day$`forex1$Perf.Day`),]
+#display.brewer.all(type = "div")
+#设定颜色卡
+mycol<- brewer.pal(11,"RdYlGn")[c(1,2,7,8,9,10,11)]
+par(cex=1,las=1)
+#画柱状图
+barplot(fxday[,2],
+        names.arg=fxday[,1],
+        ylim=c(-1,1),
+        yaxt =  "n",
+        col=mycol,
+        border=col)
+#标记坐标标签
+text(1:7*1.2-.5,fxday[,2],fxday[,2],col="black",cex=0.8)
+#背景
+axis(side=2,seq(-1,1,0.2),tcl=-0.1,col="white", col.axis="grey",las = 1,cex.axis=0.8)
+abline(h=seq(-1,1,0.2),lty=3,col="grey")
+title(main="1 DAY RELATIVE PERFORMANCE  [USD] %",cex.main=0.8)
+
+```
+
+
+### Performance
+```{r}
+#表格
+DT::datatable(forex, options = list( bPaginate = FALSE))
+
+```
+
+
+Stocks
+=======================================
+
+Row {.tabset}
+--------------------------------------------------
+
+### k线
+```{r}
+fluidRow(
+   column(1,
+  textInput("stock", "Stock","000002.sz")))
+actionButton("go", "Submit")
+
+prices <- eventReactive(input$go, {
+  symbols <- input$stock
+})
+
+#quantmod绘制K线图
+setSymbolLookup(TEMP=list(name=symbols,src='yahoo'))
+getSymbols("TEMP")
+chartSeries(TEMP,
+            name="股票走势图",
+            type="candlesticks",    #画的是蜡烛图
+            subset="last 3 month",     #为了方便绘图，用的是ISO8601ISO8601风格的字符串用于表示时间范围
+            TA="addVo();addSMA(20);addSMA(10);addSMA(5);addMACD()",            #默认使用addVo()将成交量显示在图形底部，设置NULL增加显示范围
+)
+
+```
+
+
+```{r}
+#ggplot2绘制K线图
+sz=read.csv("pingan.csv",header=TRUE)
+sz=na.omit(sz)
+
+# 为了解决日期作为横坐标会出现休市日的情况，需要以下的变量辅助
+row_len <- nrow(sz)
+breaks <- seq(1, row_len, 10)
+labels <- sz$date[breaks]
+
+# 作K线图
+p1 <- sz %>%
+  arrange(date) %>%
+  mutate(ma5 = SMA(close, n = 5, align = "right"),
+         ma10 = SMA(close, n = 10, align = "right"),
+         date_axis = date) %>%
+  ggplot(aes(x = date_axis,group = 1)) +
+  geom_boxplot(aes(lower = pmin(close, open),
+                   middle = close,
+                   upper = pmax(close, open),
+                   ymin = low,
+                   ymax = high,
+                   group = date_axis,
+                   fill = open > close),
+               stat = "identity",
+               show.legend = FALSE) +
+  geom_line(aes(y = ma5), color = "green") +
+  geom_line(aes(y = ma10), color = "red") +
+  scale_x_discrete(breaks = breaks,
+                     labels = NULL,
+                     expand = c(0, 0)) +
+  theme(axis.ticks.x = element_blank(),
+        axis.title = element_blank(),
+        axis.text.y = element_text(margin = margin(l = 8)))
+
+# 作成交量图
+p2 <- sz %>%
+  arrange(date) %>%
+  mutate(vol_ma5 = SMA(volume, n = 5, align = "right"),
+         vol_ma10 = SMA(volume, n = 10, align = "right"),
+         date_axis = date) %>%
+  ggplot(aes(x = date_axis, y = volume,group = 1)) +
+  geom_bar(stat = "identity",
+           aes(fill = open > close),
+           show.legend = FALSE) +
+  geom_line(aes(y = vol_ma5), color = "green") +
+  geom_line(aes(y = vol_ma10), color = "red") +
+  scale_x_discrete(breaks = breaks,
+                     labels = NULL,
+                     expand = c(0, 0)) +
+  scale_y_discrete(expand = c(0, 0.5)) +
+  theme(axis.title = element_blank())
+
+# 组合
+grid.arrange(p1, p2, nrow = 2, heights = 2:1)
+
+```
+
+
+
+
+
